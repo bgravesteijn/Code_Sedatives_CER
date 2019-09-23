@@ -1,0 +1,1583 @@
+---
+title: "Sedatives"
+author: "Benjamin Gravesteijn, Marco Carbonara"
+date: "2 februari 2019"
+Output_icp: html_document
+---
+Second, we are going to explore the icp group. This group possibly used sedation for both mechanical ventilation, as well as for ICP control.  We exclude patients with icp monitor, ward or admission patients, and patients aged below 16. Furthermore, we excluded patients with less or equal to one day of mechanical ventilation. 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tableone)
+library(corrplot)
+library(ggplot2)
+library(knitr)
+library(lubridate)
+library(mice)
+library(rms)
+library(lme4)
+library(data.table)
+
+load("Data/cleaned.RData")
+
+n1 <- nrow(dt)
+n2 <- nrow(dt[(dt$Subject.PatientType==3),])
+n3 <- nrow(dt[(dt$Subject.PatientType==3&
+           dt$Subject.Age>16),])
+n4 <- nrow(dt[(dt$Subject.PatientType==3&
+           dt$Subject.Age>16)&
+           ((dt$propof==1&!is.na(dt$propof))|
+              (dt$mida==1&!is.na(dt$mida))),])
+n5 <- nrow(dt[(dt$Subject.PatientType==3&
+           dt$Subject.Age>16)&
+           ((dt$propof==1&!is.na(dt$propof))|
+              (dt$mida==1&!is.na(dt$mida)))&
+           (dt$Hospital.ICUDishDurVent>1&
+              !is.na(dt$Hospital.ICUDishDurVent)),])
+
+dt <- dt[(dt$Subject.PatientType==3&
+           dt$Subject.Age>16)&
+           ((dt$propof==1&!is.na(dt$propof))|
+              (dt$mida==1&!is.na(dt$mida)))&
+           (dt$Hospital.ICUDishDurVent>1&
+              !is.na(dt$Hospital.ICUDishDurVent)),]
+
+til <- read.csv("Data/dailytil_2-2-2019.csv")
+til <- til[til$gupi%in%dt$gupi,]
+
+load("Data/CopyOfSleutellijst.rdata")
+dt <- merge(dt, dt.key, by="gupi", all.x=TRUE)
+centersubset <- names(table(dt$center)[which(table(dt$center)>20)])
+
+dt$mida_days <- as.numeric(difftime(ymd(dt$mida_stop), 
+                         ymd(dt$mida_start),
+                         units="days"))
+dt$prop_days <- as.numeric(difftime(ymd(dt$propof_stop), 
+                         ymd(dt$propof_start),
+                         units="days"))
+dt$prop_days[dt$prop_days<0] <- NA
+
+nino_subset <- (dt$mida==1&dt$propof==0)|
+               (dt$mida==0&dt$propof==1)|
+               ((dt$mida==1&dt$propof==1)&(dt$mida_days>dt$prop_days*1.5|
+                                             dt$prop_days>dt$mida_days*1.5))
+
+tiff("output_gen/excluded_both.tiff")
+with(dt,plot(mida_days, prop_days,
+             col=as.numeric(nino_subset)+2,
+             xlim=c(0,40),
+             ylim=c(0,40),
+             pch=16,
+             xlab="Days sedated with midazolam",
+             ylab="Days sedated with propofol",
+             cex=1.5, cex.lab=1.5))
+text(x=28, y=36, 
+     labels = paste("Proportion excluded =", 
+                                round((sum(!nino_subset, na.rm=TRUE)/nrow(dt)),2)),
+     cex=1.5)
+dev.off()
+
+```
+
+```{r flowchart}
+library(grid)
+library(Gmisc)
+
+grid.newpage()
+# set some parameters to use repeatedly
+leftx <- .25
+midx <- .5
+rightx <- .75
+width <- .25
+gp <- gpar(fill = "lightgrey")
+# create boxes
+(total_us <- boxGrob(label = paste("Total \n N = ", n1),
+                    x=midx, y=.9, box_gp = gp, width = width))
+
+(crit1.in_us <- boxGrob(label = paste("Remaining\n N = ", n2),
+                       x=midx, y=0.7, box_gp = gp, width = width))
+
+connectGrob(total_us, crit1.in_us, "v")
+
+(crit1.excl_us <- boxGrob(label = paste("Not ICU stratum\n N = ",
+                                       (n1-n2)),
+                         x=leftx, y=0.8, box_gp = gp, width = width))
+
+connectGrob(total_us, crit1.excl_us, "-")
+
+(crit2.in_us <- boxGrob(label = paste("Remaining\n N = ", n3),
+                       x=midx, y=0.5, box_gp = gp, width = width))
+
+connectGrob(crit1.in_us, crit2.in_us, "v")
+
+(crit2.excl_us <- boxGrob(label = paste("Age < 17\n N = ",
+                                       (n2-n3)),
+                         x=leftx, y=0.6, box_gp = gp, width = width))
+
+connectGrob(crit1.in_us, crit2.excl_us, "-")
+
+(crit3.in_us <- boxGrob(label = paste("Remaining\n N = ", n4),
+                       x=midx, y=0.3, box_gp = gp, width = width))
+
+connectGrob(crit2.in_us, crit3.in_us, "v")
+
+(crit3.excl_us <- boxGrob(label = paste("Not sedated\n N = ",
+                                       (n3-n4)), 
+                         x=leftx, y=0.4, box_gp = gp, width = width))
+
+connectGrob(crit2.in_us, crit3.excl_us, "-")
+
+(crit4.in_us <- boxGrob(label = paste("Remaining\n N = ", n5),
+                       x=midx, y=0.1, box_gp = gp, width = width))
+
+connectGrob(crit3.in_us, crit4.in_us, "v")
+
+(crit4.excl_us <- boxGrob(label = paste("0/1 days ventilated\n N = ",
+                                       (n4-n5)), 
+                         x=leftx, y=0.2, box_gp = gp, width = width))
+
+connectGrob(crit3.in_us, crit4.excl_us, "-")
+
+
+#######################save output####################
+tiff("Output_gen/flowchart_exclusion.tiff")
+grid.newpage()
+# set some parameters to use repeatedly
+leftx <- .25
+midx <- .5
+rightx <- .75
+width <- .25
+gp <- gpar(fill = "lightgrey")
+# create boxes
+(total_us <- boxGrob(label = paste("Total \n N = ", n1),
+                    x=midx, y=.9, box_gp = gp, width = width))
+
+(crit1.in_us <- boxGrob(label = paste("Remaining\n N = ", n2),
+                       x=midx, y=0.7, box_gp = gp, width = width))
+
+connectGrob(total_us, crit1.in_us, "v")
+
+(crit1.excl_us <- boxGrob(label = paste("Not ICU stratum\n N = ",
+                                       (n1-n2)),
+                         x=leftx, y=0.8, box_gp = gp, width = width))
+
+connectGrob(total_us, crit1.excl_us, "-")
+
+(crit2.in_us <- boxGrob(label = paste("Remaining\n N = ", n3),
+                       x=midx, y=0.5, box_gp = gp, width = width))
+
+connectGrob(crit1.in_us, crit2.in_us, "v")
+
+(crit2.excl_us <- boxGrob(label = paste("Age < 17\n N = ",
+                                       (n2-n3)),
+                         x=leftx, y=0.6, box_gp = gp, width = width))
+
+connectGrob(crit1.in_us, crit2.excl_us, "-")
+
+(crit3.in_us <- boxGrob(label = paste("Remaining\n N = ", n4),
+                       x=midx, y=0.3, box_gp = gp, width = width))
+
+connectGrob(crit2.in_us, crit3.in_us, "v")
+
+(crit3.excl_us <- boxGrob(label = paste("Not sedated\n N = ",
+                                       (n3-n4)), 
+                         x=leftx, y=0.4, box_gp = gp, width = width))
+
+connectGrob(crit2.in_us, crit3.excl_us, "-")
+
+(crit4.in_us <- boxGrob(label = paste("Remaining\n N = ", n5),
+                       x=midx, y=0.1, box_gp = gp, width = width))
+
+connectGrob(crit3.in_us, crit4.in_us, "v")
+
+(crit4.excl_us <- boxGrob(label = paste("0/1 days ventilated\n N = ",
+                                       (n4-n5)), 
+                         x=leftx, y=0.2, box_gp = gp, width = width))
+
+connectGrob(crit3.in_us, crit4.excl_us, "-")
+dev.off()
+```
+
+
+## Exploratory descriptive analysis
+First we describe what medication of interest patients received, followed by a baseline description per class. 
+
+```{r received sedation}
+table(dt$mida, dt$propof)
+table(dt$mida, dt$propof)
+table(dt$mida, dt$propof)
+
+table(dt$barbit, dt$mida)
+table(dt$barbit, dt$propof)
+table(dt$propof, dt$diaz)
+table(dt$dexmed, dt$mida)
+
+###correlation between sedatives
+sedat <- dt[,c("mida", "propof", "barbit", "diaz", "dexmed", "loraz", "Hospital.ICPMonitorYes")]
+cond_prob_sed <- function(sedat_if=NULL, sedat_other=NULL){
+ p_if_other <- prop.table(table(sedat_if,sedat_other),1)[2,2]
+ return(p_if_other)
+}
+sedatives <- c("Midazolam", "Propofol", 
+               "Barbiturates", "Diazepam",
+               "Dexmedetomidin", "Lorazepam")
+cond_prob_m <- matrix(data = 0, 
+                      nrow = length(sedatives),
+                      ncol = length(sedatives),
+                      dimnames = list(sedatives, sedatives))
+for(i in 1:nrow(cond_prob_m)){
+  for(j in 1:ncol(cond_prob_m)){
+    cond_prob_m[i,j] <- cond_prob_sed(sedat_if = sedat[,i], sedat_other = sedat[,j])
+  }
+}
+
+n.per.sedative <- rep(0, length(sedatives))
+for(i in 1:length(sedatives)){
+  n.per.sedative[i] <- sum(sedat[,i]==1)
+}
+n.sed <- length(sedatives)
+plot.p_df <- data.frame(probs=t(cond_prob_m)[-which(cond_prob_m==1)],
+                        n=rep(n.per.sedative, each=(n.sed-1)),
+                        sedat=rep(sedatives, each=(n.sed-1)),
+                        othersed=rep(sedatives, length(sedatives))[-c(1,8,15,22, 30, 36)])
+plot.p_df$se <- sqrt((plot.p_df$probs*(1-plot.p_df$probs))/plot.p_df$n)
+p.probs <- ggplot(plot.p_df[!(plot.p_df$sedat%in%c("Midazolam", "Propofol"))&
+                              plot.p_df$othersed%in%c("Midazolam", "Propofol"),], 
+                  aes(x=sedat,  
+                                 y=(probs)*100,
+                                 ymin=(probs-1.96*se)*100,
+                                 ymax=(probs+1.96*se)*100,
+                                 col=othersed))+
+  geom_pointrange(position = position_dodge(width=1), cex=1.5)+
+  geom_point(position = position_dodge(width=1), cex=2)+
+  scale_color_discrete("Other drug")+
+  xlab("Drug received")+
+  ylab("% receiving other drug")+
+  theme_bw()+
+  theme(text=element_text(size=16)) 
+tiff("Output_gen/concomitant_sedatives.tif", width = 20, height=10, res=100, units = "cm")
+p.probs
+dev.off()
+
+
+colnames(sedat) <- c("Midazolam", "Propofol", "Barbiturates", "Diazepam","Dexmedetomidin", "Lorazepam", "ICP")
+corr1 <- cor(sapply(sedat[,-ncol(sedat)], as.numeric), use = "pairwise.complete.obs", method = "spearman")
+corr2 <- cor(sapply(sedat[sedat$ICP==1,-ncol(sedat)], as.numeric), use = "pairwise.complete.obs", method = "spearman")
+par(mfrow=c(1,2))
+corrplot(corr1, type = "upper", title = "Overall")
+corrplot(corr2, type = "upper", title="ICP monitored")
+
+tiff("Output_gen//correlation_sedatives.tif", width = 20, height = 10, units = "cm", res=1000)
+par(mfrow=c(1,2))
+corrplot(corr1, type = "upper")
+corrplot(corr2, type = "upper")
+dev.off()
+
+table(sedat)
+
+### longitudinal rrecieving of sedatives
+n.days <- 15
+plot.sed_pd <- expand.grid(day=0:n.days, sedative=c("mida", "propof", "barbit", "diaz", "dexmed", "loraz"), n=NA)
+
+for (i in c("mida", "propof", "barbit", "diaz", "dexmed", "loraz")){
+  start_date <- ymd(dt[,paste(i, "_start", sep="")])
+  stop_date  <- ymd(dt[,paste(i, "_stop", sep="")])
+  start_day  <- difftime(start_date, ymd("1970-1-1"), units = "days")
+  stop_day   <- difftime(stop_date, ymd("1970-1-1"), units = "days")
+  days <- rep(0, n.days+1)
+  names(days) <- 0:n.days
+  days["0"] <- sum(start_day==0, na.rm=TRUE)
+  for (j in 1:n.days){
+  days[as.character(j)] <- sum(start_day==j, na.rm=TRUE)+days[as.character(j-1)]-sum(stop_day==(j-1), na.rm=TRUE)
+  }
+  days[days<0]<-0
+  plot.sed_pd[plot.sed_pd$sedative==i,]$n <- days
+}
+
+plot.sed_pd$sedative <- factor(plot.sed_pd$sedative)
+levels(plot.sed_pd$sedative) <- c("Midazolam", "Propofol", "Barbiturates", "Diazepam", "Dexmedetomidin", "Lorazepam")
+
+p1 <-ggplot(plot.sed_pd[plot.sed_pd$day!=15,], aes(x=day, y=n, fill=sedative))+
+  geom_bar(stat = "identity")+theme_bw()+
+  scale_y_continuous(limits=c(0,1300))+
+  labs(x="Day since injury",y="Number of prescribed drugs", fill="Sedative drug")+
+  theme(axis.title.x=element_text(size=13),
+        axis.title.y=element_text(size=13),
+        legend.title =element_text(size=13))
+
+plot.sed_pd <- expand.grid(day=0:n.days, sedative=c("mida", "propof", "barbit", "diaz", "dexmed", "loraz"), n=NA)
+for (i in c("mida", "propof", "barbit", "diaz", "dexmed", "loraz")){
+  start_date <- ymd(dt[dt$Hospital.ICPMonitorYes==1,paste(i, "_start", sep="")])
+  stop_date  <- ymd(dt[dt$Hospital.ICPMonitorYes==1,paste(i, "_stop", sep="")])
+  start_day  <- difftime(start_date, ymd("1970-1-1"), units = "days")
+  stop_day   <- difftime(stop_date, ymd("1970-1-1"), units = "days")
+  days <- rep(0, n.days+1)
+  names(days) <- 0:n.days
+  days["0"] <- sum(start_day==0, na.rm=TRUE)
+  for (j in 1:n.days){
+  days[as.character(j)] <- sum(start_day==j, na.rm=TRUE)+days[as.character(j-1)]-sum(stop_day==(j-1), na.rm=TRUE)
+  }
+  days[days<0]<-0
+  plot.sed_pd[plot.sed_pd$sedative==i,]$n <- days
+}
+
+plot.sed_pd$sedative <- factor(plot.sed_pd$sedative)
+levels(plot.sed_pd$sedative) <- c("Midazolam", "Propofol", "Barbiturates", "Diazepam", "Dexmedetomidin", "Lorazepam")
+
+dt <- data.frame(dt)
+for (i in c("mida_start", "mida_stop", 
+            "propof_stop", "propof_stop",
+            "barbit_start", "barbit_stop",
+            "dexmed_start", "dexmed_stop",
+            "loraz_start", "loraz_stop",
+            "diaz_start", "diaz_stop")){
+  dt[,i] <- ymd(dt[,i])
+}
+
+start_sed <- apply(dt[,c("mida_start","propof_start","barbit_start",
+            "dexmed_start","loraz_start","diaz_start")],
+            1, FUN = min, na.rm=TRUE)
+stop_sed  <- apply(dt[,c("mida_stop","propof_stop","barbit_stop",
+            "dexmed_stop","loraz_stop","diaz_stop")],
+            1, FUN = max, na.rm=TRUE)
+plot.sed.pd.df <- expand.grid(day=1:7,
+                              n_sed=NA)
+for(i in 1:nrow(plot.sed.pd.df)){
+  if(i>1){
+   sedated <- sum(table(start_sed)[1:i])-sum(table(stop_sed)[1:(i-1)])
+  }else{
+    sedated <- sum(table(start_sed)[1:i])
+  }
+  plot.sed.pd.df$n_sed[i] <- sedated
+}
+
+n <- nrow(dt)
+plot.sed.pd.df$p <- plot.sed.pd.df$n_sed/n
+plot.sed.pd.df$se <- sqrt((plot.sed.pd.df$p*(1-plot.sed.pd.df$p))/n)
+
+p2 <- ggplot(plot.sed.pd.df, aes(x=day))+
+  geom_ribbon(aes(ymin=p-1.96*se, ymax=p+1.96*se), alpha=0.3)+
+  geom_line(aes(y=p))+xlab("Day since injury")+
+  ylab("Proportion of patients sedated")+
+  theme_bw()+theme(text=element_text(size=16))
+tiff("Output_gen/reiceiving_pd.tif", width = 35, height = 16, units = "cm", res=1000)
+bgravesteijn::multiplot(p1,p2,cols=2)
+dev.off()
+
+###################til per day figure
+#general
+til$day_since_inj <- difftime(time1 = ymd(til$DailyTIL.TILDate),
+                              time2= ymd("1970-1-1"),
+                              units="days")
+tilday_tbl <- table(til$day_since_inj,til$DailyTIL.TILSedation)
+til_sed_pd <- data.frame(tilday_tbl[rownames(tilday_tbl)%in%0:(n.days),2])
+til_sed_pd <- cbind(til_sed_pd,data.frame(table(til$day_since_inj,til$DailyTIL.TILSedationMetabolic)[0:(n.days+1),2]))
+til_sed_pd <- cbind(til_sed_pd,data.frame(table(til$day_since_inj,til$DailyTIL.TILSedationHigher)[0:(n.days+1),2]))
+colnames(til_sed_pd) <- c("Normal sedation", "Metabolic suppression", "Higher")
+til_sed_pd2 <- data.frame(sedation=c(til_sed_pd$`Normal sedation`,
+                                    til_sed_pd$`Metabolic suppression`,
+                                    til_sed_pd$Higher),
+                         sedation_type=c(rep("Normal sedation", nrow(til_sed_pd)),
+                                         rep("Metabolic suppression", nrow(til_sed_pd)),
+                                         rep("Higher", nrow(til_sed_pd))),
+                         day=rep(c(1:7,10,14,21,28,35,42,49,56, 63), 3))
+
+plot.df<-data.frame(til_sed_pd2)
+p3<-ggplot(plot.df[plot.df$day<=14,], 
+           aes(x=factor(day),y=sedation, fill=sedation_type))+
+  geom_bar(stat="identity")+
+  scale_y_continuous(limits=c(0,1300))+
+  theme_bw()+
+  labs(x="Days since injury", y="N", fill="Sedation type")+
+  theme(axis.title.y=element_text(size=13),
+        axis.title.x=element_text(size=13),
+        legend.title = element_text(size=13))
+
+#icp
+#general
+til$day_since_inj <- difftime(time1 = ymd(til$DailyTIL.TILDate),
+                              time2= ymd("1970-1-1"),
+                              units="days")
+til.icp<-til[til$gupi%in%as.character(dt[dt$Hospital.ICPMonitorYes==1,]$gupi),]
+tilday_tbl <- table(til.icp$day_since_inj,til.icp$DailyTIL.TILSedation)
+til_sed_pd <- data.frame(tilday_tbl[rownames(tilday_tbl)%in%0:(n.days),2])
+til_sed_pd <- cbind(til_sed_pd,data.frame(table(til$day_since_inj,til$DailyTIL.TILSedationMetabolic)[0:(n.days+1),2]))
+til_sed_pd <- cbind(til_sed_pd,data.frame(table(til$day_since_inj,til$DailyTIL.TILSedationHigher)[0:(n.days+1),2]))
+colnames(til_sed_pd) <- c("Normal sedation", "Metabolic suppression", "Higher")
+til_sed_pd2 <- data.frame(sedation=c(til_sed_pd$`Normal sedation`,
+                                    til_sed_pd$`Metabolic suppression`,
+                                    til_sed_pd$Higher),
+                         sedation_type=c(rep("Normal sedation", nrow(til_sed_pd)),
+                                         rep("Metabolic suppression", nrow(til_sed_pd)),
+                                         rep("Higher", nrow(til_sed_pd))),
+                         day=rep(c(1:7,10,14,21,28,35,42,49,56, 63), 3))
+
+plot.df<-data.frame(til_sed_pd2)
+p4<-ggplot(plot.df[plot.df$day<=14,], 
+           aes(x=factor(day),y=sedation, fill=sedation_type))+
+  geom_bar(stat="identity")+
+  scale_y_continuous(limits=c(0,1300))+
+  theme_bw()+
+  labs(x="Days since injury", y="N", fill="Sedation type")+
+  theme(axis.title.y=element_text(size=13),
+        axis.title.x=element_text(size=13),
+        legend.title = element_text(size=13))
+
+
+p4<- p4+theme(legend.position = "none")
+p3.1<-p3+theme(legend.position = "none")
+p3.2<-p3+theme(aspect.ratio = 0,
+               axis.text.x=element_blank(),
+               axis.title.x=element_blank(),
+               axis.text.y=element_blank(),
+               axis.title.y=element_blank(),
+               line = element_blank(),
+               rect = element_blank(),
+               legend.position = "top")
+bgravesteijn::multiplot(p3.1,p4,p3.2,
+                        layout =matrix(c(1,2,3,3), nrow = 2, byrow = TRUE))
+tiff("Output_gen/sedated_til_pd.tif", width = 15, height = 16, units = "cm", res=1000)
+bgravesteijn::multiplot(p3.1,p4,p3.2,
+                        layout =matrix(c(1,2,3,3), nrow = 2, byrow = TRUE))
+dev.off()
+```
+
+### Table one
+Let's make a table one for patients receiving at least one of the medications.
+
+```{r}
+mida   <- dt[dt$mida==1&
+               dt$propof!=1,]
+mida$sed <- "mida"
+propof <- dt[dt$propof==1&
+               dt$mida!=1,]
+propof$sed <- "propof"
+both <- dt[dt$propof==1&
+               dt$mida==1,]
+both$sed <- "both"
+
+tbl1.df <- rbind(mida, propof, both)
+
+vrbls <- colnames(tbl1.df)[c(3,4,5,6,8,10,11,12,16,17,60:64,14,55,53,54, 7,9)]
+nonnormvrbls <- vrbls[c(1,3,4,6,14,15,16,18,19)]
+factorvrbls <- vrbls[which(!(vrbls%in%nonnormvrbls))]
+
+tbl1.df$InjuryHx.EDComplEventHypotension<-ifelse(tbl1.df$InjuryHx.EDComplEventHypotension%in%1:2,
+                                                 1,0)
+tbl1.df$InjuryHx.EDComplEventHypoxia<-ifelse(tbl1.df$InjuryHx.EDComplEventHypoxia%in%1:2,
+                                                 1,0)
+tbl1 <- CreateTableOne(vars = vrbls, strata = "sed", data = tbl1.df, factorVars = factorvrbls)
+tbl1.p <- print(tbl1, printToggle=FALSE, nonnorm=nonnormvrbls)
+kable(tbl1.p)
+
+write.csv2(tbl1.p, file = "Output_gen/tableone.csv")
+
+##icp group
+tbl1 <- CreateTableOne(vars = vrbls, strata = "sed", data = tbl1.df[tbl1.df$Hospital.ICPMonitorYes==1,], factorVars = factorvrbls)
+tbl1.p <- print(tbl1, printToggle=FALSE, nonnorm=nonnormvrbls)
+kable(tbl1.p)
+
+write.csv2(tbl1.p, file = "Output_gen/tableone_icp.csv")
+
+gose_sed.df <-data.frame(prop.table(table(tbl1.df$Subject.GOSE6monthEndpointDerived, tbl1.df$sed), 2))
+colnames(gose_sed.df)<- c("GOSE", "sed", "p")
+p3<-ggplot(gose_sed.df, aes(x=sed,y=p,fill=GOSE))+geom_bar(stat = "identity")+scale_x_discrete("Sedative",labels=c("Both","Midazolam", "Propofol"))+
+  theme(axis.title.x=element_text(size=16),
+        axis.text.x = element_text(size=14),
+        axis.title.y=element_blank())
+p3
+tiff("Output_gen/gose_sedative.tif", width=15, height=13, res=1000, units="cm")
+p3
+dev.off()
+```
+
+
+### cum days of sedation regression
+Also variation per site will be used. 
+We focus on propofol and midazolam.
+We need to impute the data before that. 
+```{r impute, eval=FALSE, include=FALSE}
+dt$midadays <- as.numeric(difftime(ymd(dt$mida_stop), ymd(dt$mida_start), units = "days"))
+dt$midadays[dt$midadays>quantile(dt$midadays, probs=0.99, na.rm=TRUE)] <- quantile(dt$midadays, probs=0.99, na.rm=TRUE)
+dt$midadays[is.na(dt$midadays)] <- 0
+dt$propdays <- as.numeric(difftime(ymd(dt$propof_stop), ymd(dt$propof_start), units = "days"))
+dt$propdays[dt$propdays>quantile(dt$propdays, probs=0.99, na.rm=TRUE)] <- quantile(dt$propdays, probs=0.99, na.rm=TRUE)
+dt$propdays[is.na(dt$propdays)] <- 0
+dt$propdays[dt$propdays<0]<-NA
+dt$opidays <- as.numeric(difftime(ymd(dt$opioid_stop), ymd(dt$opioid_start), units = "days"))
+dt$opidays[dt$opidays>quantile(dt$opidays, probs=0.99, na.rm=TRUE)] <- quantile(dt$opidays, probs=0.99, na.rm=TRUE)
+dt$opidays[is.na(dt$opidays)] <- 0
+dt$opidays[dt$opidays<0]<-NA
+
+
+dt$midadays <- as.numeric(ceiling(dt$midadays))
+dt$propdays <- as.numeric(ceiling(dt$propdays))
+dt$opidays <- as.numeric(ceiling(dt$opidays))
+
+dt$prop_rel_days <- dt$propdays/dt$loicus
+dt$prop_rel_days[dt$prop_rel_days>1]<-NA
+dt$prop_rel_days[dt$prop_rel_days<0]<-NA
+dt$mida_rel_days <- dt$midadays/dt$loicus
+dt$mida_rel_days[dt$mida_rel_days>1] <- NA
+dt$mida_rel_days[dt$mida_rel_days<0] <- NA
+
+start_date<-data.frame(mida=ymd(dt$mida_start),
+                       prop=ymd(dt$propof_start))
+stop_date<-data.frame(mida=ymd(dt$mida_stop),
+                       prop=ymd(dt$propof_stop))
+start_date <- apply(start_date, 1, min, na.rm=TRUE)
+stop_date <- apply(stop_date, 1, max, na.rm=TRUE)
+dt$sed_days <- as.numeric(difftime(time1 = stop_date, time2 = start_date, units = "days"))
+dt$sed_days[dt$sed_days<0]<-NA
+dt$sed_days[dt$sed_days>14]<-14
+dt$sed      <- factor(ifelse(dt$propdays>dt$midadays, "propofol", "midazolam"))
+
+
+df <- dt[,c("gupi", "Subject.Age", "Subject.Sex", "InjuryHx.GCSMotorBaselineDerived",
+            "InjuryHx.PupilsBaselineDerived","InjuryHx.EDComplEventHypoxia", "InjuryHx.EDComplEventHypotension",
+            "EDH", "TSAH", "CTClass","hb", "glucose",
+            "Subject.GOSE6monthEndpointDerived", "InjuryHx.TotalISS",
+            "Surgeries.ExtraCranialSurgDone", "mei", "Surgeries.CranialSurgDone",
+            "los", "loicus", "center", "country", "sed_days", "sed", "nor_days", "opidays")]
+bgravesteijn::distr.na(df)
+levels(df$Surgeries.ExtraCranialSurgDone) <- c("no", "yes", NA)
+corr <- cor(sapply(df, as.numeric), use="pairwise.complete.obs", method="spearman")
+corrplot(corr, type = "upper")
+
+dfi0 <- mice(df, maxit=0)
+meth <- dfi0$method
+pred <- dfi0$predictorMatrix
+
+pred[,c("gupi", "center", "country")] <- 0
+
+dfi <- mice(df, m=5, method = meth, predictorMatrix = pred, seed=123)
+
+plot(dfi)
+densityplot(dfi)
+
+save(dfi, file="Data/icp_imputed.RData")
+save(df, file="Data/icp_to_be_imputed.RData")
+```
+
+We will fit the model and see what characteristics are associated with cumulative propofol or mida dose. This model will be fitted only in centers which included more than 20 patients. 
+
+
+```{r}
+load("Data/icp_imputed.RData")
+load("Data/icp_to_be_imputed.RData")
+fit_full <- fit.mult.impute(sed_days~Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   sed+
+                                   opidays+
+                                   nor_days, 
+                                 data=df, xtrans=dfi, fitter=glm, family="poisson",
+                            subset=df$center%in%centersubset)
+res_fe<-coef(summary(fit_full))
+
+fit_full_re <- with(dfi, glmer(sed_days~Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   sed+
+                                   opidays+
+                                   nor_days+
+                                   (1|sed/country),
+                               family="poisson",
+                            subset=df$center%in%centersubset,
+                            control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=100000))))
+res_re <-summary(pool(fit_full_re))
+
+nice_res <- function(est, se){
+  est2 <- sprintf("%.2f", exp(est))
+  lo <- sprintf("%.2f",exp(est-1.96*se))
+  hi <- sprintf("%.2f",exp(est+1.96*se))
+  res <- paste(est2, " (", lo, " - ", hi, ")", sep="")
+  return(res)
+}
+
+res_fe2 <- nice_res(res_fe[,1], res_fe[,2])
+res_re2 <- nice_res(res_re[,1], res_re[,2])
+res_tot <- cbind(res_fe2, res_re2)
+rownames(res_tot) <- rownames(res_fe)
+kable(res_tot)
+
+write.csv2(res_tot, file="Output_gen/result_pracvarmod.csv")
+```
+
+How big are the differences
+
+```{r}
+res <- data.table(data.frame(ranef(fit_full_re$analyses[[1]], condVar=TRUE)))
+res <- res[, .(mean(condval), mean(condsd)), by=grp]
+colnames(res) <- c("grp", "est", "se")
+res$sed    <- substr(res$grp, start = 4, stop=20)
+res$country <- substr(res$grp, start=1, stop=2)
+res<-res[1:19,]
+
+
+
+library(maps)
+library(maptools)
+
+key.maps     <- data.frame(country=unique(res$country),
+                           region=c("austria", "belgium", "spain", "finland", "france",
+                                    "italy","netherlands","norway","sweden", "uk"))
+
+prop.map     <- merge(res[res$sed=="propofol",], key.maps, by="country")
+mida.map     <- merge(res[res$sed=="midazolam",], key.maps, by="country")
+
+world        <- map_data("world")
+world$region <- tolower(world$region) 
+world        <- world[world$region!="antarctica", ]
+
+world$propest  <- prop.map$est[match(world$region, prop.map$region, nomatch=NA)] 
+world$midaest  <- mida.map$est[match(world$region, mida.map$region, nomatch=NA)] 
+
+p4a <- ggplot() + geom_polygon(data = world, aes(long, lat, group = group, fill = exp(midaest)))+theme_bw()+
+  theme(line = element_blank(),
+        legend.position = "bottom") + 
+  scale_x_continuous(limits=c(-11,33),labels = NULL, name = element_blank()) + 
+  scale_y_continuous(limits=c(35,70),labels = NULL, expand = c(0, 0), name = element_blank())+
+  scale_fill_continuous(name="Times the average days receiving midazolam", low="yellow", high="darkblue", na.value="lightgrey")
+
+p4b <- ggplot() + geom_polygon(data = world, aes(long, lat, group = group, fill = exp(propest)))+theme_bw()+
+  theme(line = element_blank(),
+        legend.position = "bottom") + 
+  scale_x_continuous(limits=c(-11,33),labels = NULL, name = element_blank()) + 
+  scale_y_continuous(limits=c(35,70),labels = NULL, expand = c(0, 0), name = element_blank())+
+  scale_fill_continuous(name="Times the average days receiving propofol", low="yellow", high="darkblue", na.value="lightgrey")
+
+bgravesteijn::multiplot(p4b, p4a, cols=2)
+
+# p4<-ggplot(res, aes(x=center, y=exp(est), ymin=exp(est-1.96*se), ymax=exp(est+1.96*se), col=sed))+
+#   geom_linerange(position= position_dodge(width = 0.7), cex=2)+
+#   geom_point(position= position_dodge(width = 0.7), cex=5)+
+#   geom_hline(yintercept = 1, lty=2)+
+#   labs(y="Log ratio of days receiving the drug", x="Center", color="Sedative drug")+
+#   theme_bw()+
+#   theme(axis.title.x=element_text(size=13),
+#         axis.ticks.y = element_blank(),
+#         axis.text.y = element_blank(),
+#         axis.title.y = element_text(size=13),
+#         legend.title = element_text(size=13))+
+#   coord_flip()
+# p4
+tiff("Output_gen/variation.tif", width = 25, height = 12, units = "cm", res=1000)
+bgravesteijn::multiplot(p4b, p4a, cols=2)
+dev.off()
+```
+
+### Effect on outcome
+
+Let's start with GOSE: unadjusted, adjusted (multivariable), and iv.
+
+```{r}
+df$sed <- factor(df$sed, levels=c("midazolam", "propofol"))
+dd <- datadist(df)
+options(datadist="dd")
+
+result_gose <- c(unadj_days="0", unadj_prop="0",
+                 adj_days ="0", adj_prop="0",
+                 iv_days="0", iv_prop="0")
+
+nice_res <- function(est, se){
+  est2 <- sprintf("%.2f", exp(est))
+  lo <- sprintf("%.2f",exp(est-1.96*se))
+  hi <- sprintf("%.2f",exp(est+1.96*se))
+  res <- paste(est2, " (", lo, " - ", hi, ")", sep="")
+  return(res)
+}
+
+#######because lrm apparently uses propofol as reference category, swap the sign of the beta
+nice_res2 <- function(est, se){
+  est2 <- sprintf("%.2f", exp(-est))
+  lo <- sprintf("%.2f",exp((-est)-1.96*se))
+  hi <- sprintf("%.2f",exp((-est)+1.96*se))
+  res <- paste(est2, " (", lo, " - ", hi, ")", sep="")
+  return(res)
+}
+
+fit_1_gose <- fit.mult.impute(Subject.GOSE6monthEndpointDerived~sed_days+sed,
+                              data=df, xtrans=dfi, fitter=lrm)
+result1 <- summary(fit_1_gose)[c("sed_days", "sed - midazolam:propofol"),c("Effect", "S.E.")]
+result_gose[c("unadj_days", "unadj_prop")] <- nice_res2(est = result1[,1], se = result1[,2])
+
+fit_2_gose <- fit.mult.impute(Subject.GOSE6monthEndpointDerived~sed_days+sed+
+                               Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   opidays+
+                                   nor_days,
+                              data=df, xtrans=dfi, fitter=lrm)
+result2 <- summary(fit_2_gose)[c("sed_days", "sed - midazolam:propofol"),c("Effect", "S.E.")]
+result_gose[c("adj_days", "adj_prop")] <- nice_res2(est = result2[,1], se = result2[,2])
+
+result_gose
+```
+
+length of icu stay
+```{r}
+result_icus <- c(unadj_days="0", unadj_prop="0",
+                 adj_days ="0", adj_prop="0",
+                 iv_days="0", iv_prop="0")
+
+
+fit_1_icus <- fit.mult.impute(loicus~sed_days+sed,
+                              data=df, xtrans=dfi, fitter=glm, family="poisson")
+result1 <- coef(summary(fit_1_icus))[c("sed_days", "sedpropofol"),c("Estimate", "Std. Error")]
+result_icus[c("unadj_days", "unadj_prop")] <- nice_res(est = result1[,1], se = result1[,2])
+
+fit_2_icus <- fit.mult.impute(loicus~sed_days+sed+
+                                Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   opidays+
+                                   nor_days,
+                              data=df, xtrans=dfi, fitter=glm, family="poisson")
+result2 <- coef(summary(fit_2_icus))[c("sed_days", "sedpropofol"),c("Estimate", "Std. Error")]
+result_icus[c("adj_days", "adj_prop")] <- nice_res(est = result2[,1], se = result2[,2])
+
+
+result_icus
+
+```
+
+length of stay
+```{r}
+result_los <- c(unadj_days="0", unadj_prop="0",
+                 adj_days ="0", adj_prop="0",
+                 iv_days="0", iv_prop="0")
+
+
+fit_1_los <- fit.mult.impute(los~sed_days+sed,
+                              data=df, xtrans=dfi, fitter=glm, family="poisson")
+result1 <- coef(summary(fit_1_los))[c("sed_days", "sedpropofol"),c("Estimate", "Std. Error")]
+result_los[c("unadj_days", "unadj_prop")] <- nice_res(est = result1[,1], se = result1[,2])
+
+fit_2_los <- fit.mult.impute(los~sed_days+sed+
+                                Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   opidays+
+                                   nor_days,
+                              data=df, xtrans=dfi, fitter=glm, family="poisson")
+result2 <- coef(summary(fit_2_los))[c("sed_days", "sedpropofol"),c("Estimate", "Std. Error")]
+result_los[c("adj_days", "adj_prop")] <- nice_res(est = result2[,1], se = result2[,2])
+
+result_los
+
+```
+
+total result
+```{r}
+result_tot <- rbind(result_gose, result_icus,result_los)
+kable(result_tot)
+
+write.csv2(result_tot, file="Output_gen/result_outcome.csv")
+```
+
+Effect of sedation on ICP control
+```{r}
+icp        <- read.csv("Data/icp_pd.csv")
+icp_vals   <- data.table(icp[,-which(colnames(icp)%in%c("gupi","HourlyValues.HVDate"))])
+icp$icp_pd <- apply(icp_vals, 1, median, na.rm=TRUE)
+icp        <- icp[, which(colnames(icp)%in%c("gupi", "HourlyValues.HVDate", "icp_pd"))]
+
+hist(icp$icp_pd)
+
+per_99 <- quantile(icp$icp_pd, probs=0.99, na.rm=TRUE)
+icp$icp_pd[icp$icp_pd>per_99]<-NA
+icp$HourlyValues.HVDate <- as.numeric(difftime(time1 = ymd(icp$HourlyValues.HVDate), 
+                                               time2 = ymd("1970-1-1"),
+                                               units="days"))
+icp$HourlyValues.HVDate[icp$HourlyValues.HVDate<0]<-NA
+icp$HourlyValues.HVDate[icp$HourlyValues.HVDate>7]<-NA
+hist(icp$HourlyValues.HVDate)
+
+df_icp<-complete(dfi,1)[,c("gupi", "sed_days", "sed","Subject.Age",
+      "Subject.Sex", "InjuryHx.GCSMotorBaselineDerived",
+      "InjuryHx.PupilsBaselineDerived","mei","Surgeries.CranialSurgDone",
+      "Surgeries.ExtraCranialSurgDone")]
+df_icp <- merge(icp, df_icp, by="gupi", all.x=TRUE)
+df_icp <- df_icp[df_icp$HourlyValues.HVDate<7,]
+
+til_intv <- data.table(read.csv("Data/dailytil_26-2-2019.csv"))
+til_intv <- data.frame(til_intv[,.(gupi, 
+            DailyTIL.TILICPSurgeryDecomCranectomy,
+            DailyTIL.TILFeverHypothermia,
+            DailyTIL.TILSedationMetabolic,
+            DailyTIL.TILHyperventilationIntensive,
+            DailyTIL.TILDate)])
+for (i in c("DailyTIL.TILICPSurgeryDecomCranectomy",
+            "DailyTIL.TILFeverHypothermia",
+            "DailyTIL.TILSedationMetabolic",
+            "DailyTIL.TILHyperventilationIntensive",
+            "DailyTIL.TILDate")){
+  til_intv[,i] <- factor(til_intv[,i]) 
+            }
+til_intv$DailyTIL.TILDate <- as.numeric(difftime(ymd(til_intv$DailyTIL.TILDate), 
+                                      ymd("1970-1-1"),
+                                      units="days"))
+til_intv$DailyTIL.TILDate[til_intv$DailyTIL.TILDate>7] <- NA
+til_intv$DailyTIL.TILDate[til_intv$DailyTIL.TILDate<0]  <- NA
+til_intv$HourlyValues.HVDate <- til_intv$DailyTIL.TILDate
+df_icp <- merge(df_icp, til_intv, all.x=TRUE, by=c("gupi", "HourlyValues.HVDate"))
+
+fit1 <- lmer(icp_pd~HourlyValues.HVDate+HourlyValues.HVDate:sed+
+              (HourlyValues.HVDate|gupi), data=df_icp)
+summary(fit1)
+
+
+fit2 <- lmer(icp_pd~HourlyValues.HVDate+HourlyValues.HVDate:sed+
+               Subject.Age+
+               InjuryHx.GCSMotorBaselineDerived+
+               InjuryHx.PupilsBaselineDerived+
+               HourlyValues.HVDate:DailyTIL.TILICPSurgeryDecomCranectomy+
+               HourlyValues.HVDate:DailyTIL.TILFeverHypothermia+
+               HourlyValues.HVDate:DailyTIL.TILHyperventilationIntensive+
+               HourlyValues.HVDate:DailyTIL.TILSedationMetabolic+
+               (HourlyValues.HVDate|gupi), data=df_icp)
+summary(fit2)
+
+compl.gupi_dupl<- df_icp$gupi[which(complete.cases(df_icp[,c("gupi", "icp_pd", "sed", 
+                               "HourlyValues.HVDate",
+                               "Subject.Age","InjuryHx.GCSMotorBaselineDerived",
+                                 "InjuryHx.PupilsBaselineDerived",
+                               "DailyTIL.TILICPSurgeryDecomCranectomy",
+                               "DailyTIL.TILFeverHypothermia",
+                               "DailyTIL.TILHyperventilationIntensive",
+                               "DailyTIL.TILSedationMetabolic")]))]
+compl.gupi <- unique(compl.gupi_dupl)
+
+plot(fit1)
+plot(fit2)
+
+plot_df <- expand.grid(gupi=as.character(compl.gupi)[1:50],
+                       HourlyValues.HVDate=0:7, 
+                       sed=factor(levels(df_icp$sed)),
+                       Subject.Age=median(df_icp$Subject.Age, na.rm=TRUE),
+                       Subject.Sex=factor("M"),
+                       InjuryHx.GCSMotorBaselineDerived=median(df_icp$InjuryHx.GCSMotorBaselineDerived, na.rm=TRUE),
+                       InjuryHx.PupilsBaselineDerived=factor("0"),
+                       DailyTIL.TILICPSurgeryDecomCranectomy=factor("0"),
+                       DailyTIL.TILFeverHypothermia=factor("0"),
+                       DailyTIL.TILHyperventilationIntensive=factor("0"),
+                       DailyTIL.TILSedationMetabolic=factor("0"))
+plot_df$pred1 <- predict(fit1, newdata=plot_df)
+plot_df$pred2 <- predict(fit2, newdata=plot_df)
+plot_unadj <- ggplot(plot_df, aes(x=HourlyValues.HVDate+1, y=pred1, col=sed))+
+  geom_boxplot(data = plot_df,aes(x=factor(HourlyValues.HVDate), y=pred2, col=sed))+
+  geom_smooth()+theme_bw()+scale_y_continuous(limits=c(0,24))+
+  ylab("predicted ICP")+xlab("Day since injury")+ggtitle("Unadjusted")
+plot_adj <- ggplot(plot_df, aes(x=HourlyValues.HVDate+1, y=pred2, col=sed))+
+  geom_boxplot(data = plot_df,aes(x=factor(HourlyValues.HVDate), y=pred2, col=sed))+
+  geom_smooth()+theme_bw()+scale_y_continuous(limits=c(0,24))+
+  ylab("predicted ICP")+xlab("Day since injury")+ggtitle("Adjusted")
+
+bgravesteijn::multiplot(plot_unadj,plot_adj, cols=2)
+tiff("Output_icp/plot_icp_control.tiff", width = 1000)
+bgravesteijn::multiplot(plot_unadj,plot_adj, cols=2)
+dev.off()
+
+
+###########sensitivity analysis: patients with median ICP over 10
+subg_icp <- data.table(df_icp)
+subg_icp <- subg_icp[,.(median(icp_pd, na.rm=TRUE)), by=gupi]
+subg_icp <- as.character(subg_icp$gupi[which(subg_icp$V1>10)])
+
+fit1 <- lmer(icp_pd~HourlyValues.HVDate+HourlyValues.HVDate:sed+
+              (HourlyValues.HVDate|gupi), data=df_icp, subset = gupi%in%subg_icp)
+summary(fit1)
+
+
+fit2 <- lmer(icp_pd~HourlyValues.HVDate+HourlyValues.HVDate:sed+
+               Subject.Age+
+               InjuryHx.GCSMotorBaselineDerived+
+               InjuryHx.PupilsBaselineDerived+
+               HourlyValues.HVDate:DailyTIL.TILICPSurgeryDecomCranectomy+
+               HourlyValues.HVDate:DailyTIL.TILFeverHypothermia+
+               HourlyValues.HVDate:DailyTIL.TILHyperventilationIntensive+
+               HourlyValues.HVDate:DailyTIL.TILSedationMetabolic+
+               (HourlyValues.HVDate|gupi), data=df_icp, subset = gupi%in%subg_icp)
+summary(fit2)
+
+compl.gupi_dupl<- df_icp$gupi[which(complete.cases(df_icp[,c("gupi", "icp_pd", "sed", 
+                               "HourlyValues.HVDate",
+                               "Subject.Age","InjuryHx.GCSMotorBaselineDerived",
+                                 "InjuryHx.PupilsBaselineDerived",
+                               "DailyTIL.TILICPSurgeryDecomCranectomy",
+                               "DailyTIL.TILFeverHypothermia",
+                               "DailyTIL.TILHyperventilationIntensive",
+                               "DailyTIL.TILSedationMetabolic")])&
+                                 df_icp$gupi%in%subg_icp)]
+compl.gupi <- unique(compl.gupi_dupl)
+
+plot(fit1)
+plot(fit2)
+
+set.seed(123)
+plot_df <- expand.grid(gupi=as.character(compl.gupi)[sample(1:length(compl.gupi),
+                                                            100)],
+                       HourlyValues.HVDate=0:7, 
+                       sed=factor(levels(df_icp$sed)),
+                       Subject.Age=median(df_icp$Subject.Age, na.rm=TRUE),
+                       Subject.Sex=factor("M"),
+                       InjuryHx.GCSMotorBaselineDerived=median(df_icp$InjuryHx.GCSMotorBaselineDerived, na.rm=TRUE),
+                       InjuryHx.PupilsBaselineDerived=factor("0"),
+                       DailyTIL.TILICPSurgeryDecomCranectomy=factor("0"),
+                       DailyTIL.TILFeverHypothermia=factor("0"),
+                       DailyTIL.TILHyperventilationIntensive=factor("0"),
+                       DailyTIL.TILSedationMetabolic=factor("0"))
+plot_df$pred1 <- predict(fit1, newdata=plot_df)
+plot_df$pred2 <- predict(fit2, newdata=plot_df)
+
+p_unadj <- dt(coef(summary(fit1))["HourlyValues.HVDate:sedpropofol",
+                                 "t value"], df=length(df) - 1)
+p_adj <- dt(coef(summary(fit2))["HourlyValues.HVDate:sedpropofol",
+                                 "t value"], df=length(df) - 1)
+plot_unadj <- ggplot(plot_df, aes(x=HourlyValues.HVDate+1, y=pred1, col=sed))+
+  geom_boxplot(data = plot_df,aes(x=factor(HourlyValues.HVDate), y=pred2, col=sed))+
+  geom_smooth()+theme_bw()+scale_y_continuous(limits=c(0,24))+
+  ylab("predicted ICP")+xlab("Day since injury")+ggtitle("Unadjusted")+
+  annotate("text",x=2, y=5, label=paste("p =", sprintf("%.2f",p_unadj)))
+plot_adj <- ggplot(plot_df, aes(x=HourlyValues.HVDate+1, y=pred2, col=sed))+
+  geom_boxplot(data = plot_df,aes(x=factor(HourlyValues.HVDate), y=pred2, col=sed))+
+  geom_smooth()+theme_bw()+scale_y_continuous(limits=c(0,24))+
+  ylab("predicted ICP")+xlab("Day since injury")+ggtitle("Adjusted")+
+  annotate("text",x=2, y=5, label=paste("p =", sprintf("%.2f",p_adj)))
+
+bgravesteijn::multiplot(plot_unadj,plot_adj, cols=2)
+tiff("Output_icp/plot_icp_control_icp_above10.tiff", width = 1000)
+bgravesteijn::multiplot(plot_unadj,plot_adj, cols=2)
+dev.off()
+```
+
+```{r, }
+til_intv$major_icp_intv <- ifelse(til_intv$DailyTIL.TILICPSurgeryDecomCranectomy=="1"|
+                                    til_intv$DailyTIL.TILFeverHypothermia=="1"|
+                                    # til_intv$DailyTIL.TILSedationMetabolic=="1"|
+                                    til_intv$DailyTIL.TILHyperventilationIntensive=="1",
+                                  1,0)
+til_intv <- data.table(til_intv)
+major_intv <- til_intv[,.(major_icp_intv=ifelse(1%in%major_icp_intv, 1,0)), by=gupi]
+major_intv$major_icp_intv <- factor(major_intv$major_icp_intv)
+df <- merge(df, major_intv, by="gupi", all.x=TRUE)
+dfi <- mice::cbind(dfi, major_intv=df$major_icp_intv)
+
+fit1 <- with(dfi, glm(major_intv~sed+sed_days,family="binomial"))
+summary(pool(fit1))
+
+fit1 <- with(dfi, glm(major_intv~sed+sed_days,family="binomial"))
+res_unadj<-summary(pool(fit1))
+
+fit2 <- with(dfi, glm(major_intv~sed_days+sed+
+                                Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   opidays+
+                                   nor_days, family="binomial"))
+res_adj <- summary(pool(fit2))
+
+res_unadj <- nice_res(est = res_unadj$estimate[which(rownames(res_unadj)%in%c("sedpropofol",
+                                                                 "sed_days"))],
+         se  = res_unadj$std.error[which(rownames(res_unadj)%in%c("sedpropofol",
+                                                                 "sed_days"))])
+res_adj <-nice_res(est = res_adj$estimate[which(rownames(res_adj)%in%c("sedpropofol",
+                                                                 "sed_days"))],
+         se  = res_adj$std.error[which(rownames(res_adj)%in%c("sedpropofol",
+                                                                 "sed_days"))])
+
+table(df$major_icp_intv, df$sed)
+prop.table(table(df$major_icp_intv, df$sed),2)
+
+result_tot <- rbind(result_tot, major_intv = c(res_unadj[2],res_unadj[1],
+                                  res_adj[2], res_adj[1],
+                                  "0", "0"))
+kable(result_tot)
+
+write.csv2(result_tot, file="Output_gen/result_outcome.csv")
+```
+
+###ICP subgroup outcome analysis
+### Effect on outcome
+
+Let's start with GOSE: unadjusted, adjusted (multivariable), and iv.
+
+```{r}
+subset_icp<-dt$Hospital.ICPMonitorYes==1
+fit_1_gose <- fit.mult.impute(Subject.GOSE6monthEndpointDerived~sed_days+sed,
+                              data=df, xtrans=dfi, fitter=lrm, subset=subset_icp)
+result1 <- summary(fit_1_gose)[c("sed_days", "sed - midazolam:propofol"),c("Effect", "S.E.")]
+result_gose[c("unadj_days", "unadj_prop")] <- nice_res2(est = result1[,1], se = result1[,2])
+
+fit_2_gose <- fit.mult.impute(Subject.GOSE6monthEndpointDerived~sed_days+sed+
+                               Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   opidays+
+                                   nor_days,
+                              data=df, xtrans=dfi, fitter=lrm, subset=subset_icp)
+result2 <- summary(fit_2_gose)[c("sed_days", "sed - midazolam:propofol"),c("Effect", "S.E.")]
+result_gose[c("adj_days", "adj_prop")] <- nice_res2(est = result2[,1], se = result2[,2])
+
+result_gose
+```
+
+length of icu stay
+```{r}
+result_icus <- c(unadj_days="0", unadj_prop="0",
+                 adj_days ="0", adj_prop="0",
+                 iv_days="0", iv_prop="0")
+
+
+fit_1_icus <- fit.mult.impute(loicus~sed_days+sed,
+                              data=df, xtrans=dfi, fitter=glm, family="poisson", subset=subset_icp)
+result1 <- coef(summary(fit_1_icus))[c("sed_days", "sedpropofol"),c("Estimate", "Std. Error")]
+result_icus[c("unadj_days", "unadj_prop")] <- nice_res(est = result1[,1], se = result1[,2])
+
+fit_2_icus <- fit.mult.impute(loicus~sed_days+sed+
+                                Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   opidays+
+                                   nor_days,
+                              data=df, xtrans=dfi, fitter=glm, family="poisson", subset=subset_icp)
+result2 <- coef(summary(fit_2_icus))[c("sed_days", "sedpropofol"),c("Estimate", "Std. Error")]
+result_icus[c("adj_days", "adj_prop")] <- nice_res(est = result2[,1], se = result2[,2])
+
+
+result_icus
+
+```
+
+length of stay
+```{r}
+result_los <- c(unadj_days="0", unadj_prop="0",
+                 adj_days ="0", adj_prop="0",
+                 iv_days="0", iv_prop="0")
+
+
+fit_1_los <- fit.mult.impute(los~sed_days+sed,
+                              data=df, xtrans=dfi, fitter=glm, family="poisson", subset=subset_icp)
+result1 <- coef(summary(fit_1_los))[c("sed_days", "sedpropofol"),c("Estimate", "Std. Error")]
+result_los[c("unadj_days", "unadj_prop")] <- nice_res(est = result1[,1], se = result1[,2])
+
+fit_2_los <- fit.mult.impute(los~sed_days+sed+
+                                Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   opidays+
+                                   nor_days,
+                              data=df, xtrans=dfi, fitter=glm, family="poisson", subset=subset_icp)
+result2 <- coef(summary(fit_2_los))[c("sed_days", "sedpropofol"),c("Estimate", "Std. Error")]
+result_los[c("adj_days", "adj_prop")] <- nice_res(est = result2[,1], se = result2[,2])
+
+result_los
+
+```
+
+total result
+```{r}
+result_tot <- rbind(result_gose, result_icus,result_los)
+kable(result_tot)
+
+write.csv2(result_tot, file="Output_gen/result_outcome_icp.csv")
+```
+
+```{r, prevention of aggressive therapies}
+
+
+fit1 <- with(dfi, glm(major_intv~sed+sed_days,family="binomial", subset=subset_icp))
+summary(pool(fit1))
+
+fit1 <- with(dfi, glm(major_intv~sed+sed_days,family="binomial", subset=subset_icp))
+res_unadj<-summary(pool(fit1))
+
+fit2 <- with(dfi, glm(major_intv~sed_days+sed+
+                                Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   opidays+
+                                   nor_days, family="binomial",
+                      subset = subset_icp)) 
+res_adj <- summary(pool(fit2))
+
+res_unadj <- nice_res(est = res_unadj$estimate[which(rownames(res_unadj)%in%c("sedpropofol",
+                                                                 "sed_days"))],
+         se  = res_unadj$std.error[which(rownames(res_unadj)%in%c("sedpropofol",
+                                                                 "sed_days"))])
+res_adj <-nice_res(est = res_adj$estimate[which(rownames(res_adj)%in%c("sedpropofol",
+                                                                 "sed_days"))],
+         se  = res_adj$std.error[which(rownames(res_adj)%in%c("sedpropofol",
+                                                                 "sed_days"))])
+
+table(df$major_icp_intv, df$sed)
+prop.table(table(df$major_icp_intv, df$sed),2)
+
+result_tot <- rbind(result_tot, major_intv = c(res_unadj[2],res_unadj[1],
+                                  res_adj[2], res_adj[1],
+                                  "0", "0"))
+kable(result_tot)
+
+write.csv2(result_tot, file="Output_gen/result_outcome_icp.csv")
+```
+
+
+### Nino subgroup outcome analysis
+
+```{r}
+
+fit_2_gose <- fit.mult.impute(Subject.GOSE6monthEndpointDerived~sed_days+sed+
+                               Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   opidays+
+                                   nor_days,
+                              data=df, xtrans=dfi, fitter=lrm, subset=nino_subset)
+result2 <- summary(fit_2_gose)[c("sed_days", "sed - midazolam:propofol"),c("Effect", "S.E.")]
+result_gose[c("adj_days", "adj_prop")] <- nice_res2(est = result2[,1], se = result2[,2])
+
+fit_2_gose_unadj <- fit.mult.impute(Subject.GOSE6monthEndpointDerived~sed_days+sed,
+                              data=df, xtrans=dfi, fitter=lrm, subset=nino_subset)
+result2unadj <- summary(fit_2_gose_unadj)[c("sed_days", "sed - midazolam:propofol"),c("Effect", "S.E.")]
+result_gose[c("unadj_days", "unadj_prop")] <- nice_res2(est = result2unadj[,1], se = result2unadj[,2])
+
+
+result_gose
+```
+
+length of icu stay
+```{r}
+result_icus <- c(unadj_days="0", unadj_prop="0",
+                 adj_days ="0", adj_prop="0",
+                 iv_days="0", iv_prop="0")
+
+
+fit_1_icus <- fit.mult.impute(loicus~sed_days+sed,
+                              data=df, xtrans=dfi, fitter=glm, family="poisson", subset=nino_subset)
+result1 <- coef(summary(fit_1_icus))[c("sed_days", "sedpropofol"),c("Estimate", "Std. Error")]
+result_icus[c("unadj_days", "unadj_prop")] <- nice_res(est = result1[,1], se = result1[,2])
+
+fit_2_icus <- fit.mult.impute(loicus~sed_days+sed+
+                                Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   opidays+
+                                   nor_days,
+                              data=df, xtrans=dfi, fitter=glm, family="poisson", subset=nino_subset)
+result2 <- coef(summary(fit_2_icus))[c("sed_days", "sedpropofol"),c("Estimate", "Std. Error")]
+result_icus[c("adj_days", "adj_prop")] <- nice_res(est = result2[,1], se = result2[,2])
+
+
+result_icus
+
+```
+
+length of stay
+```{r}
+result_los <- c(unadj_days="0", unadj_prop="0",
+                 adj_days ="0", adj_prop="0",
+                 iv_days="0", iv_prop="0")
+
+
+fit_1_los <- fit.mult.impute(los~sed_days+sed,
+                              data=df, xtrans=dfi, fitter=glm, family="poisson", subset=nino_subset)
+result1 <- coef(summary(fit_1_los))[c("sed_days", "sedpropofol"),c("Estimate", "Std. Error")]
+result_los[c("unadj_days", "unadj_prop")] <- nice_res(est = result1[,1], se = result1[,2])
+
+fit_2_los <- fit.mult.impute(los~sed_days+sed+
+                                Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   opidays+
+                                   nor_days,
+                              data=df, xtrans=dfi, fitter=glm, family="poisson", subset=nino_subset)
+result2 <- coef(summary(fit_2_los))[c("sed_days", "sedpropofol"),c("Estimate", "Std. Error")]
+result_los[c("adj_days", "adj_prop")] <- nice_res(est = result2[,1], se = result2[,2])
+
+result_los
+
+```
+
+total result
+```{r}
+result_tot <- rbind(result_gose, result_icus,result_los)
+kable(result_tot)
+
+write.csv2(result_tot, file="Output_gen/result_outcome_both_subset.csv")
+```
+
+```{r, prevention of aggressive therapies}
+
+
+fit1 <- with(dfi, glm(major_intv~sed+sed_days,family="binomial", subset=nino_subset))
+summary(pool(fit1))
+
+fit1 <- with(dfi, glm(major_intv~sed+sed_days,family="binomial", subset=nino_subset))
+res_unadj<-summary(pool(fit1))
+
+fit2 <- with(dfi, glm(major_intv~sed_days+sed+
+                                Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   opidays+
+                                   nor_days, family="binomial",
+                      subset = nino_subset)) 
+res_adj <- summary(pool(fit2))
+
+res_unadj <- nice_res(est = res_unadj$estimate[which(rownames(res_unadj)%in%c("sedpropofol",
+                                                                 "sed_days"))],
+         se  = res_unadj$std.error[which(rownames(res_unadj)%in%c("sedpropofol",
+                                                                 "sed_days"))])
+res_adj <-nice_res(est = res_adj$estimate[which(rownames(res_adj)%in%c("sedpropofol",
+                                                                 "sed_days"))],
+         se  = res_adj$std.error[which(rownames(res_adj)%in%c("sedpropofol",
+                                                                 "sed_days"))])
+
+table(df$major_icp_intv, df$sed)
+prop.table(table(df$major_icp_intv, df$sed),2)
+
+result_tot <- rbind(result_tot, major_intv = c(res_unadj[2],res_unadj[1],
+                                  res_adj[2], res_adj[1],
+                                  "0", "0"))
+kable(result_tot)
+
+write.csv2(result_tot, file="Output_gen/result_outcome_both_subset.csv")
+```
+
+
+
+####Therapy table
+
+```{r therapy table}
+df$Hospital.ICUDishDurVent<-dt$Hospital.ICUDishDurVent
+
+
+til_intv <- read.csv("Data/dailytil_26-2-2019.csv")
+til_intv <- til_intv[,c("gupi", "DailyTIL.TILSedationNeuromuscular", "DailyTIL.TILDate")]
+
+til_intv$DailyTIL.TILDate <- ymd(til_intv$DailyTIL.TILDate)
+
+til_intv <- data.table(til_intv)
+til_intv <- til_intv[DailyTIL.TILSedationNeuromuscular==1,
+         .(blockdays=as.numeric(difftime(max(DailyTIL.TILDate),
+                                    min(DailyTIL.TILDate),
+                                    units="days"))),
+         by=gupi]
+df <- merge(df, til_intv, by="gupi", all.x=TRUE)
+df$blockdays[is.na(df$blockdays)] <- 0
+
+thr_df <- df[,c("gupi","sed", "sed_days","Hospital.ICUDishDurVent",
+                "Surgeries.CranialSurgDone",
+                "Surgeries.ExtraCranialSurgDone",
+                "nor_days", "opidays","blockdays",
+                "los", "loicus")]
+thr_df <- merge(thr_df, dt[,c("gupi", "Hospital.ICUDisComplSeizure")],
+                by="gupi", all.x=TRUE)
+##########icp/cpp/sbp
+labs <- read.csv("Data/hourlyvalues_4-4-2019.csv")
+icp <- labs[, 1:13]
+colnames(icp)[-1]<-substr(colnames(icp)[-1], start = 19, stop=21)
+icp<- icp[,c(1,1+order(as.numeric(colnames(icp[-1]))))]
+icp[is.na(icp)] <- 0
+icp2<-icp
+icp2[icp2==0]<-NA
+
+sbp <- labs[, c(1, 26:37)]
+colnames(sbp)[-1]<-substr(colnames(sbp)[-1], start = 19, stop=21)
+sbp<- sbp[,c(1,1+order(as.numeric(colnames(sbp[-1]))))]
+sbp[is.na(sbp)] <- 0
+sbp2<-sbp
+sbp2[sbp2==0]<-NA
+
+cpp <- labs[, c(1, 14:25)]
+colnames(cpp)[-1]<-substr(colnames(cpp)[-1], start = 19, stop=21)
+cpp<- cpp[,c(1,1+order(as.numeric(colnames(cpp[-1]))))]
+cpp[is.na(cpp)] <- 0
+cpp2<-cpp
+cpp2[cpp2==0]<-NA
+
+res.auc <- data.frame(gupi=unique(labs$gupi),
+                      icp.auc=NA,
+                      cpp.auc=NA,
+                      sbp.auc=NA,
+                      med.icp=NA,
+                      med.cpp=NA,
+                      med.sbp=NA)
+
+for(i in as.character(unique(labs$gupi))){
+  calc.aut <- function(x, thr, above=TRUE){
+    x <- unlist(x)
+    n.obs <- sum(x>0)
+    if(above){
+      x <- ifelse(x<thr&x!=0,thr, x)
+      }else{
+      x <- ifelse(x>thr|x==0,thr, x)
+      } 
+    if(above){
+      aut <- sum(ifelse((x-thr)<0,0,(x-thr)))
+    }else{
+      aut <- sum(thr-x)
+    }
+    return(aut)
+    }
+  res.auc[res.auc$gupi==i,"icp.auc"] <- calc.aut(icp[icp$gupi==i,-1], thr=20, above=TRUE)
+  res.auc[res.auc$gupi==i,"cpp.auc"] <- calc.aut(cpp[cpp$gupi==i,-1], thr=65, above=FALSE)
+  res.auc[res.auc$gupi==i,"sbp.auc"] <- calc.aut(sbp[sbp$gupi==i,-1], thr=80, above=FALSE)
+  
+  
+  res.auc[res.auc$gupi==i,"med.icp"] <- median(unlist(icp2[icp2$gupi==i,-1]),na.rm=TRUE)
+  res.auc[res.auc$gupi==i,"med.cpp"] <- median(unlist(cpp2[cpp2$gupi==i,-1]),na.rm=TRUE)
+  res.auc[res.auc$gupi==i,"med.sbp"] <- median(unlist(sbp2[sbp2$gupi==i,-1]),na.rm=TRUE)
+}
+
+thr_df<-merge(thr_df, res.auc, by="gupi", all.x=TRUE)
+
+summary(thr_df)
+
+
+thr_df$icp_over20<- rep(NA, nrow(thr_df))
+thr_df$CPP_under65<- rep(NA, nrow(thr_df))
+thr_df$sbp_under80<- rep(NA, nrow(thr_df))
+for(i in 1:nrow(thr_df)){
+  gupi <- as.character(thr_df$gupi[i])
+  
+  icps <- icp2[icp2$gupi==gupi,-1]
+  thr_df$icp_over20[i] <- as.numeric(sum(icps>20, na.rm=TRUE)>0)
+  
+  cpps <- cpp2[cpp2$gupi==gupi,-1]
+  thr_df$CPP_under65[i] <- CPP_under65(sum(cpps<65, na.rm=TRUE)>0)
+  
+  sbps <- sbp2[sbp2$gupi==gupi,-1]
+  thr_df$sbp_under80[i] <- as.numeric(sum(sbps<80, na.rm=TRUE)>0)
+}
+thr_df$icp_over20<- factor(thr_df$icp_over20)
+thr_df$CPP_under65<- factor(thr_df$CPP_under65)
+thr_df$sbp_under80<- factor(thr_df$sbp_under80)
+
+
+thr_df$icp.auc<- ifelse(thr_df$icp_over20==1, thr_df$icp.auc, NA)
+thr_df$cpp.auc<- ifelse(thr_df$CPP_under65==1, thr_df$cpp.auc, NA)
+thr_df$sbp.auc<- ifelse(thr_df$sbp_under80==1, thr_df$sbp.auc, NA)
+
+vars <- colnames(thr_df)[c(3:9,12,10,11,19,13,16,20,14,17,21,15,18)]
+nonnorm <- vars[c(1,2,5,6,7,9,10,12,13,15,16,18,19)]
+facvars<-vars[which(!(vars%in%nonnorm))]
+
+tbl3<-CreateTableOne(vars = vars, strata = "sed", data = thr_df)
+tbl.3<-print(tbl3, nonnorm=nonnorm, printToggle=FALSE)
+kable(tbl.3)
+
+write.csv2(tbl.3, file = "Output_gen/therapy_table_icp.csv")
+```
+
+```{r, adjusted days of nor/opioids}
+
+fit1 <- fit.mult.impute(opidays~sed,xtrans=dfi, data=df, fitter=glm, family="poisson")
+
+fit1.adj <- fit.mult.impute(I(opidays>0)~Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   sed,xtrans=dfi, data=df, fitter=glm, family="poisson")
+summary(fit1)
+summary(fit1.adj)
+
+ratio <- coef(summary(fit1.adj))["sedpropofol",1]
+se <- coef(summary(fit1.adj))["sedpropofol",2]
+exp(ratio)
+exp(ratio-1.96*se)
+exp(ratio+1.96*se)
+
+til_nor <- read.csv("Data/dailytil_26-2-2019.csv")
+til_nor <- data.table(til_nor[,c("gupi", "DailyTIL.TILNoradrenalineDose", "DailyTIL.TILDate")])
+til_nor$DailyTIL.TILDate <- ymd(til_nor$DailyTIL.TILDate)
+
+til_nor2 <- til_nor[,.(nor_days2=as.numeric(difftime(time1 = max(DailyTIL.TILDate),
+                                          time2 = min(DailyTIL.TILDate),
+                                          units="days"))),
+                    by=gupi]
+df <- merge(df, til_nor2, by="gupi", all.x=TRUE)
+dfi <- cbind(dfi, nor_days2=df$nor_days2)
+
+fit2 <- fit.mult.impute(nor_days~sed,xtrans=dfi, data=df, fitter=glm, family="poisson")
+
+fit2.adj <- fit.mult.impute(nor_days~Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   sed,xtrans=dfi, data=df, fitter=glm, family="poisson")
+summary(fit2)
+summary(fit2.adj)
+
+ratio <- coef(summary(fit2.adj))["sedpropofol",1]
+se <- coef(summary(fit2.adj))["sedpropofol",2]
+exp(ratio)
+exp(ratio-1.96*se)
+exp(ratio+1.96*se)
+
+ratio <- coef(summary(fit2))["sedpropofol",1]
+se <- coef(summary(fit2))["sedpropofol",2]
+exp(ratio)
+exp(ratio-1.96*se)
+exp(ratio+1.96*se)
+
+
+fit2_subs <- fit.mult.impute(nor_days~sed,xtrans=dfi, data=df, fitter=glm, 
+                        family="poisson", subset=nino_subset)
+
+fit2.adj_subs <- fit.mult.impute(nor_days~Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+
+                                   sed,xtrans=dfi, data=df, fitter=glm, family="poisson", subset=nino_subset)
+
+ratio <- coef(summary(fit2.adj_subs))["sedpropofol",1]
+se <- coef(summary(fit2.adj_subs))["sedpropofol",2]
+exp(ratio)
+exp(ratio-1.96*se)
+exp(ratio+1.96*se)
+
+ratio <- coef(summary(fit2_subs))["sedpropofol",1]
+se <- coef(summary(fit2_subs))["sedpropofol",2]
+exp(ratio)
+exp(ratio-1.96*se)
+exp(ratio+1.96*se)
+
+fit.mult.impute(Subject.GOSE6monthEndpointDerived~Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+nor_days, data=df, xtrans=dfi, fitter=lrm)
+fit.mult.impute(Subject.GOSE6monthEndpointDerived~Subject.Age+
+                                   Subject.Sex+
+                                   InjuryHx.GCSMotorBaselineDerived+
+                                   InjuryHx.PupilsBaselineDerived+
+                                   TSAH+
+                                   EDH+
+                                   CTClass+
+                                   hb+
+                                   glucose+
+                                   InjuryHx.TotalISS+opidays, data=df, xtrans=dfi, fitter=lrm)
+```
+
